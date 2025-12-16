@@ -7,13 +7,11 @@
   console.log('🔌 WebSocket URL:', wsUrl);
 
   let name = '';
-  let roomCode = '';
+  let songCount = 5;
 
   let playerId: string | null = null;
   let room: { roomCode: any; phase: string; currentSongIndex: number; songCount: any; players: any; hostId: any; } | null = null;
   let errorMsg = '';
-  let titleGuess = '';
-  let artistGuess = '';
   let isLoading = false;
 
   $: hostPlayer = room?.players?.find((p: any) => p.id === room?.hostId);
@@ -31,7 +29,6 @@
       const msg = JSON.parse(e.data);
       if (msg.type === 'welcome') {
         playerId = msg.payload.playerId;
-        roomCode = msg.payload.roomCode;
       }
       if (msg.type === 'room_state') {
         room = msg.payload;
@@ -52,24 +49,40 @@
     ws.send(JSON.stringify({ type, payload }));
   }
 
-  async function joinRoom() {
+  async function createRoom() {
     isLoading = true;
     try {
       await connect();
-      send('join_room', { name, roomCode });
+      send('create_room', { name, songCount });
     } finally {
       isLoading = false;
     }
   }
 
-  function submitGuess(titleGuess: any, artistGuess: any) {
-    send('submit_guess', { roomCode, playerId, titleGuess, artistGuess });
+  function startGame() {
+    send('start_game', { roomCode: room?.roomCode });
+  }
+
+  function nextSong() {
+    send('next_song', { roomCode: room?.roomCode });
+  }
+
+  function openReview() {
+    send('open_review', { roomCode: room?.roomCode });
+  }
+
+  function markPlayer(pid: any, correct: boolean) {
+    send('mark_player', { roomCode: room?.roomCode, playerId: pid, correct });
+  }
+
+  function restart() {
+    send('restart', { roomCode: room?.roomCode });
   }
 </script>
 
 <div class="page">
   <Snowfall />
-  <h1>🎄 Kerst Muziek Quiz - Speler 🎶</h1>
+  <h1>🎄 Kerst Muziek Quiz - Host 🎶</h1>
 
   {#if errorMsg}
     <div class="error">{errorMsg}</div>
@@ -77,13 +90,13 @@
 
   {#if !room}
     <div class="card">
-      <input placeholder="Je naam" bind:value={name} disabled={isLoading} />
-      <input placeholder="Room code" bind:value={roomCode} disabled={isLoading} />
-      <button on:click={joinRoom} disabled={isLoading}>
+      <input placeholder="Host naam" bind:value={name} disabled={isLoading} />
+      <input type="number" min="1" max="50" placeholder="Aantal liedjes" bind:value={songCount} disabled={isLoading} />
+      <button on:click={createRoom} disabled={isLoading}>
         {#if isLoading}
           <span class="spinner"></span> Verbinden...
         {:else}
-          🎁 Join
+          🎅 Room maken
         {/if}
       </button>
     </div>
@@ -112,18 +125,38 @@
                   {p.titleGuess || p.artistGuess ? 'Ingestuurd' : 'Nog niet' }
                 </span>
               </div>
+              {#if room.phase === 'review'}
+                <div class="guesses">
+                  <div><b>Titel:</b> {p.titleGuess || '—'}</div>
+                  <div><b>Artiest:</b> {p.artistGuess || '—'}</div>
+                </div>
+              {/if}
             </div>
+
+            {#if room.phase === 'review' && room.hostId === playerId}
+              <div class="actions">
+                <button on:click={() => markPlayer(p.id, true)}>✔</button>
+                <button on:click={() => markPlayer(p.id, false)}>✖</button>
+              </div>
+            {/if}
           </li>
         {/each}
       </ul>
 
-      {#if room.phase === 'playing' && room.hostId !== playerId}
-        <div class="guess-input">
-          <input placeholder="Titel" bind:value={titleGuess} />
-          <input placeholder="Artiest" bind:value={artistGuess} />
-          <button on:click={() => submitGuess(titleGuess, artistGuess)}>📤 Verstuur</button>
-        </div>
-      {/if}
+      <div class="host">
+        {#if room.phase === 'lobby'}
+          <button on:click={startGame}>▶ Start</button>
+        {/if}
+        {#if room.phase === 'playing'}
+          <button on:click={openReview}>👀 Review</button>
+        {/if}
+        {#if room.phase === 'review'}
+          <button on:click={nextSong}>➡ Volgende</button>
+        {/if}
+        {#if room.phase === 'results'}
+          <button on:click={restart}>🔄 Opnieuw</button>
+        {/if}
+      </div>
     </div>
   {/if}
 </div>
@@ -278,6 +311,12 @@ button:disabled {
   gap: 0.6rem;
 }
 
+.guesses {
+  font-size: 0.9rem;
+  margin-top: 0.35rem;
+  color: var(--gold);
+}
+
 .badge {
   padding: 0.2rem 0.55rem;
   border-radius: 999px;
@@ -303,16 +342,46 @@ button:disabled {
   border: 1px solid rgba(193, 18, 31, 0.35);
 }
 
-/* Input styling */
-.guess-input {
-  margin-top: 1.5rem;
+.actions {
   display: flex;
-  flex-direction: column;
   gap: 0.5rem;
 }
 
-.guess-input button {
-  width: 100%;
+.actions button {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+}
+
+/* Error */
+.error {
+  background: rgba(193, 18, 31, 0.85);
+  padding: 0.6rem 1rem;
+  border-radius: 10px;
+  margin-bottom: 1rem;
+}
+
+.host {
+  margin-top: 1.5rem;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.host button {
+  flex: 1;
+  min-width: 140px;
+}
+
+/* Responsive */
+@media (max-width: 520px) {
+  .host {
+    flex-direction: column;
+  }
+  
+  .host button {
+    width: 100%;
+  }
 }
 
 </style>
