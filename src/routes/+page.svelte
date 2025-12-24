@@ -15,6 +15,9 @@
   let titleGuess = '';
   let artistGuess = '';
   let isLoading = false;
+  let reconnectAttempts = 0;
+  let maxReconnectAttempts = 5;
+  let shouldReconnect = false;
 
   $: hostPlayer = room?.players?.find((p: any) => p.id === room?.hostId);
   $: nonHostPlayers = room?.players?.filter((p: any) => p.id !== room?.hostId) ?? [];
@@ -23,12 +26,30 @@
     if (ws && ws.readyState === WebSocket.OPEN) return;
     ws = new WebSocket(wsUrl);
 
-    await new Promise<void>((resolve) => {
-      ws.onopen = () => resolve();
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Connection timeout'));
+      }, 5000);
+
+      ws.onopen = () => {
+        clearTimeout(timeout);
+        reconnectAttempts = 0;
+        shouldReconnect = true;
+        resolve();
+      };
+
+      ws.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error('Connection failed'));
+      };
     });
 
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
+      if (msg.type === 'ping') {
+        send('pong');
+        return;
+      }
       if (msg.type === 'welcome') {
         playerId = msg.payload.playerId;
         roomCode = msg.payload.roomCode;
@@ -42,8 +63,24 @@
     };
 
     ws.onclose = () => {
-      room = null;
-      playerId = null;
+      if (shouldReconnect && reconnectAttempts < maxReconnectAttempts && room) {
+        reconnectAttempts++;
+        console.log(`Reconnecting... attempt ${reconnectAttempts}`);
+        const savedPlayerId = playerId; // Save playerId before reconnecting
+        setTimeout(() => {
+          connect().then(() => {
+            if (name && roomCode) {
+              send('join_room', { name, roomCode, playerId: savedPlayerId });
+            }
+          }).catch(err => {
+            console.error('Reconnection failed:', err);
+          });
+        }, 1000 * reconnectAttempts);
+      } else {
+        room = null;
+        playerId = null;
+        shouldReconnect = false;
+      }
     };
   }
 
@@ -54,9 +91,13 @@
 
   async function joinRoom() {
     isLoading = true;
+    shouldReconnect = false;
+    reconnectAttempts = 0;
     try {
       await connect();
       send('join_room', { name, roomCode });
+    } catch (err) {
+      errorMsg = 'Kan geen verbinding maken. Probeer het opnieuw.';
     } finally {
       isLoading = false;
     }

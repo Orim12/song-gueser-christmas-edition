@@ -13,6 +13,9 @@
   let room: { roomCode: any; phase: string; currentSongIndex: number; songCount: any; players: any; hostId: any; } | null = null;
   let errorMsg = '';
   let isLoading = false;
+  let reconnectAttempts = 0;
+  let maxReconnectAttempts = 5;
+  let shouldReconnect = false;
 
   $: hostPlayer = room?.players?.find((p: any) => p.id === room?.hostId);
   $: nonHostPlayers = room?.players?.filter((p: any) => p.id !== room?.hostId) ?? [];
@@ -21,12 +24,30 @@
     if (ws && ws.readyState === WebSocket.OPEN) return;
     ws = new WebSocket(wsUrl);
 
-    await new Promise<void>((resolve) => {
-      ws.onopen = () => resolve();
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Connection timeout'));
+      }, 5000);
+
+      ws.onopen = () => {
+        clearTimeout(timeout);
+        reconnectAttempts = 0;
+        shouldReconnect = true;
+        resolve();
+      };
+
+      ws.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error('Connection failed'));
+      };
     });
 
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
+      if (msg.type === 'ping') {
+        send('pong');
+        return;
+      }
       if (msg.type === 'welcome') {
         playerId = msg.payload.playerId;
       }
@@ -39,8 +60,23 @@
     };
 
     ws.onclose = () => {
-      room = null;
-      playerId = null;
+      if (shouldReconnect && reconnectAttempts < maxReconnectAttempts && room) {
+        reconnectAttempts++;
+        console.log(`Reconnecting... attempt ${reconnectAttempts}`);
+        setTimeout(() => {
+          connect().then(() => {
+            if (name && room?.roomCode) {
+              send('create_room', { name, songCount });
+            }
+          }).catch(err => {
+            console.error('Reconnection failed:', err);
+          });
+        }, 1000 * reconnectAttempts);
+      } else {
+        room = null;
+        playerId = null;
+        shouldReconnect = false;
+      }
     };
   }
 
@@ -51,9 +87,13 @@
 
   async function createRoom() {
     isLoading = true;
+    shouldReconnect = false;
+    reconnectAttempts = 0;
     try {
       await connect();
       send('create_room', { name, songCount });
+    } catch (err) {
+      errorMsg = 'Kan geen verbinding maken. Probeer het opnieuw.';
     } finally {
       isLoading = false;
     }
@@ -71,8 +111,8 @@
     send('open_review', { roomCode: room?.roomCode });
   }
 
-  function markPlayer(pid: any, correct: boolean) {
-    send('mark_player', { roomCode: room?.roomCode, playerId: pid, correct });
+  function markPlayer(pid: any, field: 'title' | 'artist', correct: boolean) {
+    send('mark_player', { roomCode: room?.roomCode, playerId: pid, field, correct });
   }
 
   function restart() {
@@ -127,16 +167,40 @@
               </div>
               {#if room.phase === 'review'}
                 <div class="guesses">
-                  <div><b>Titel:</b> {p.titleGuess || '—'}</div>
-                  <div><b>Artiest:</b> {p.artistGuess || '—'}</div>
+                  <div class="guess-row">
+                    <b>Titel:</b> <span class={p.titleCorrect === true ? 'correct' : p.titleCorrect === false ? 'incorrect' : ''}>{p.titleGuess || '—'}</span>
+                  </div>
+                  <div class="guess-row">
+                    <b>Artiest:</b> <span class={p.artistCorrect === true ? 'correct' : p.artistCorrect === false ? 'incorrect' : ''}>{p.artistGuess || '—'}</span>
+                  </div>
                 </div>
               {/if}
             </div>
 
             {#if room.phase === 'review' && room.hostId === playerId}
               <div class="actions">
-                <button on:click={() => markPlayer(p.id, true)}>✔</button>
-                <button on:click={() => markPlayer(p.id, false)}>✖</button>
+                <div class="action-group">
+                  <span class="label">Titel:</span>
+                  <button 
+                    class="btn-check {p.titleCorrect === true ? 'active' : ''}" 
+                    on:click={() => markPlayer(p.id, 'title', true)}
+                  >✔</button>
+                  <button 
+                    class="btn-cross {p.titleCorrect === false ? 'active' : ''}" 
+                    on:click={() => markPlayer(p.id, 'title', false)}
+                  >✖</button>
+                </div>
+                <div class="action-group">
+                  <span class="label">Artiest:</span>
+                  <button 
+                    class="btn-check {p.artistCorrect === true ? 'active' : ''}" 
+                    on:click={() => markPlayer(p.id, 'artist', true)}
+                  >✔</button>
+                  <button 
+                    class="btn-cross {p.artistCorrect === false ? 'active' : ''}" 
+                    on:click={() => markPlayer(p.id, 'artist', false)}
+                  >✖</button>
+                </div>
               </div>
             {/if}
           </li>
@@ -317,6 +381,19 @@ button:disabled {
   color: var(--gold);
 }
 
+.guess-row {
+  margin: 0.2rem 0;
+}
+
+.guess-row .correct {
+  color: #9aff9a;
+}
+
+.guess-row .incorrect {
+  color: #ffc4c4;
+  text-decoration: line-through;
+}
+
 .badge {
   padding: 0.2rem 0.55rem;
   border-radius: 999px;
@@ -344,12 +421,35 @@ button:disabled {
 
 .actions {
   display: flex;
+  flex-direction: column;
   gap: 0.5rem;
+}
+
+.action-group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.action-group .label {
+  font-size: 0.75rem;
+  min-width: 50px;
+  opacity: 0.8;
 }
 
 .actions button {
   padding: 0.4rem 0.6rem;
   font-size: 0.9rem;
+}
+
+.btn-check.active {
+  background: linear-gradient(135deg, #00a000, #006400);
+  box-shadow: 0 0 8px rgba(0, 255, 0, 0.4);
+}
+
+.btn-cross.active {
+  background: linear-gradient(135deg, #c1121f, #780000);
+  box-shadow: 0 0 8px rgba(193, 18, 31, 0.4);
 }
 
 /* Error */
@@ -380,6 +480,14 @@ button:disabled {
   }
   
   .host button {
+    width: 100%;
+  }
+
+  .player {
+    flex-direction: column;
+  }
+
+  .actions {
     width: 100%;
   }
 }

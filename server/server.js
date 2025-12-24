@@ -11,12 +11,16 @@ import { randomBytes } from 'crypto';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 const wss = new WebSocketServer({ port: PORT });
+const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 
 /** roomCode -> room */
 const rooms = new Map();
 
 /** ws -> { roomCode, playerId } */
 const clientMeta = new WeakMap();
+
+/** ws -> interval */
+const heartbeats = new WeakMap();
 
 const phases = {
   lobby: 'lobby',
@@ -96,7 +100,8 @@ function handleCreateRoom(ws, payload) {
       titleGuess: '',
       artistGuess: '',
       submitted: false,
-      isCorrect: undefined
+      titleCorrect: undefined,
+      artistCorrect: undefined
     }],
     createdAt: Date.now()
   };
@@ -111,6 +116,7 @@ function handleCreateRoom(ws, payload) {
 function handleJoinRoom(ws, payload) {
   const name = payload?.name?.trim();
   const roomCode = payload?.roomCode?.trim();
+  const existingPlayerId = payload?.playerId;
 
   if (!name || !roomCode) {
     return error(ws, 'Name and room code required');
@@ -119,17 +125,38 @@ function handleJoinRoom(ws, payload) {
   const room = rooms.get(roomCode);
   if (!room) return error(ws, 'Room not found');
 
-  const playerId = genId();
+  // Check if player is rejoining with existing ID
+  let player = existingPlayerId ? room.players.find(p => p.id === existingPlayerId) : null;
+  let playerId;
 
-  room.players.push({
-    id: playerId,
-    name,
-    score: 0,
-    titleGuess: '',
-    artistGuess: '',
-    submitted: false,
-    isCorrect: undefined
-  });
+  if (player) {
+    // Rejoining player - keep their data and score
+    playerId = existingPlayerId;
+    player.titleGuess = '';
+    player.artistGuess = '';
+    player.submitted = false;
+  } else {
+    // New player or existing player not found by ID - check by name
+    player = room.players.find(p => p.name === name);
+    
+    if (player) {
+      // Returning player with same name - reuse their data
+      playerId = player.id;
+    } else {
+      // Completely new player
+      playerId = genId();
+      room.players.push({
+        id: playerId,
+        name,
+        score: 0,
+        titleGuess: '',
+        artistGuess: '',
+        submitted: false,
+        titleCorrect: undefined,
+        artistCorrect: undefined
+      });
+    }
+  }
 
   clientMeta.set(ws, { roomCode, playerId });
   send(ws, { type: 'welcome', payload: { roomCode, playerId } });
@@ -149,7 +176,8 @@ function handleStartGame(ws, payload) {
     titleGuess: '',
     artistGuess: '',
     submitted: false,
-    isCorrect: undefined
+    titleCorrect: undefined,
+    artistCorrect: undefined
   }));
 
   broadcastRoom(room);
@@ -186,11 +214,39 @@ function handleMarkPlayer(ws, payload) {
   const player = room.players.find(p => p.id === payload?.playerId);
   if (!player) return;
 
+  const field = payload?.field; // 'title' or 'artist'
   const correct = !!payload.correct;
-  if (correct && !player.isCorrect) player.score++;
-  if (!correct && player.isCorrect) player.score = Math.max(0, player.score - 1);
 
-  player.isCorrect = correct;
+  if (field === 'title') {
+    const wasCorrect = player.titleCorrect === true;
+    const isCorrect = correct;
+    
+    // Add point if changing to correct
+    if (isCorrect && !wasCorrect) {
+      player.score++;
+    }
+    // Remove point if changing from correct to incorrect
+    if (!isCorrect && wasCorrect) {
+      player.score = Math.max(0, player.score - 1);
+    }
+    
+    player.titleCorrect = correct;
+  } else if (field === 'artist') {
+    const wasCorrect = player.artistCorrect === true;
+    const isCorrect = correct;
+    
+    // Add point if changing to correct
+    if (isCorrect && !wasCorrect) {
+      player.score++;
+    }
+    // Remove point if changing from correct to incorrect
+    if (!isCorrect && wasCorrect) {
+      player.score = Math.max(0, player.score - 1);
+    }
+    
+    player.artistCorrect = correct;
+  }
+
   broadcastRoom(room);
 }
 
@@ -207,7 +263,8 @@ function handleNextSong(ws, payload) {
       titleGuess: '',
       artistGuess: '',
       submitted: false,
-      isCorrect: undefined
+      titleCorrect: undefined,
+      artistCorrect: undefined
     }));
   } else {
     room.phase = phases.results;
@@ -223,13 +280,14 @@ function handleRestart(ws, payload) {
 
   room.phase = phases.lobby;
   room.currentSongIndex = 0;
+  // Keep scores - only reset round-specific data
   room.players = room.players.map(p => ({
     ...p,
-    score: 0,
     titleGuess: '',
     artistGuess: '',
     submitted: false,
-    isCorrect: undefined
+    titleCorrect: undefined,
+    artistCorrect: undefined
   }));
 
   broadcastRoom(room);
@@ -240,6 +298,21 @@ function handleRestart(ws, payload) {
 ===================== */
 
 wss.on('connection', (ws) => {
+  ws.isAlive = true;
+
+  // Start heartbeat
+  const heartbeat = setInterval(() => {
+    if (ws.isAlive === false) {
+      clearInterval(heartbeat);
+      heartbeats.delete(ws);
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    send(ws, { type: 'ping' });
+  }, HEARTBEAT_INTERVAL);
+
+  heartbeats.set(ws, heartbeat);
+
   ws.on('message', (data) => {
     let msg;
     try {
@@ -249,6 +322,12 @@ wss.on('connection', (ws) => {
     }
 
     const { type, payload } = msg;
+
+    // Handle pong response
+    if (type === 'pong') {
+      ws.isAlive = true;
+      return;
+    }
 
     switch (type) {
       case 'create_room': return handleCreateRoom(ws, payload);
@@ -263,7 +342,18 @@ wss.on('connection', (ws) => {
     }
   });
 
+  ws.on('error', (err) => {
+    console.error('WebSocket error:', err);
+  });
+
   ws.on('close', () => {
+    // Clear heartbeat
+    const heartbeat = heartbeats.get(ws);
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeats.delete(ws);
+    }
+
     const meta = clientMeta.get(ws);
     if (!meta) return;
 
