@@ -55,6 +55,11 @@
         roomCode = msg.payload.roomCode;
       }
       if (msg.type === 'room_state') {
+        // Clear guesses when entering playing phase (new song)
+        if (msg.payload.phase === 'playing' && room?.phase !== 'playing') {
+          titleGuess = '';
+          artistGuess = '';
+        }
         room = msg.payload;
       }
       if (msg.type === 'error') {
