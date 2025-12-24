@@ -16,6 +16,8 @@
   let reconnectAttempts = 0;
   let maxReconnectAttempts = 5;
   let shouldReconnect = false;
+  let showRoomsList = false;
+  let roomsList: any[] = [];
 
   $: hostPlayer = room?.players?.find((p: any) => p.id === room?.hostId);
   $: nonHostPlayers = room?.players?.filter((p: any) => p.id !== room?.hostId) ?? [];
@@ -53,6 +55,15 @@
       }
       if (msg.type === 'room_state') {
         room = msg.payload;
+      }
+      if (msg.type === 'room_deleted') {
+        room = null;
+        playerId = null;
+        shouldReconnect = false;
+        errorMsg = 'Room is verwijderd door de host';
+      }
+      if (msg.type === 'rooms_list') {
+        roomsList = msg.payload.rooms;
       }
       if (msg.type === 'error') {
         errorMsg = msg.payload.message;
@@ -117,6 +128,19 @@
 
   function restart() {
     send('restart', { roomCode: room?.roomCode });
+  }
+
+  function deleteRoom() {
+    if (confirm('Weet je zeker dat je deze room wilt verwijderen?')) {
+      send('delete_room', { roomCode: room?.roomCode });
+    }
+  }
+
+  function toggleRoomsList() {
+    showRoomsList = !showRoomsList;
+    if (showRoomsList) {
+      send('list_rooms');
+    }
   }
 </script>
 
@@ -220,8 +244,34 @@
         {#if room.phase === 'results'}
           <button on:click={restart}>🔄 Opnieuw</button>
         {/if}
+        <button class="btn-delete" on:click={deleteRoom}>🗑️ Verwijder Room</button>
+        <button class="btn-list" on:click={toggleRoomsList}>📋 Toon Rooms</button>
       </div>
     </div>
+
+    {#if showRoomsList}
+      <div class="card rooms-list">
+        <h3>🎄 Actieve Rooms</h3>
+        {#if roomsList.length === 0}
+          <p class="empty">Geen actieve rooms</p>
+        {:else}
+          <ul class="rooms">
+            {#each roomsList as r}
+              <li class="room-item">
+                <div class="room-info">
+                  <strong>Room {r.roomCode}</strong>
+                  <span class="badge badge-phase">{r.phase}</span>
+                </div>
+                <div class="room-details">
+                  <span>👥 {r.playerCount} spelers</span>
+                  <span>🎵 {r.currentSongIndex + 1}/{r.songCount}</span>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -471,6 +521,66 @@ button:disabled {
 .host button {
   flex: 1;
   min-width: 140px;
+}
+
+.btn-delete {
+  background: linear-gradient(135deg, #8b0000, #5a0000);
+}
+
+.btn-list {
+  background: linear-gradient(135deg, #1e6b4e, #0b3d2e);
+}
+
+.rooms-list {
+  margin-top: 1rem;
+}
+
+.rooms-list h3 {
+  margin-top: 0;
+  color: var(--gold);
+}
+
+.rooms {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.room-item {
+  background: rgba(0,0,0,0.28);
+  padding: 0.75rem;
+  border-radius: 10px;
+  margin: 0.5rem 0;
+}
+
+.room-info {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.3rem;
+}
+
+.room-details {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.85rem;
+  opacity: 0.9;
+}
+
+.badge-phase {
+  background: rgba(255, 223, 108, 0.2);
+  color: var(--gold);
+  border: 1px solid rgba(255, 223, 108, 0.35);
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.empty {
+  text-align: center;
+  opacity: 0.7;
+  font-style: italic;
 }
 
 /* Responsive */

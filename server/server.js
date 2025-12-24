@@ -293,6 +293,35 @@ function handleRestart(ws, payload) {
   broadcastRoom(room);
 }
 
+function handleDeleteRoom(ws, payload) {
+  const room = rooms.get(payload?.roomCode);
+  if (!room) return error(ws, 'Room not found');
+  if (!assertHost(ws, room)) return;
+
+  // Notify all clients in the room before deletion
+  wss.clients.forEach((client) => {
+    const meta = clientMeta.get(client);
+    if (meta?.roomCode === room.roomCode && client.readyState === client.OPEN) {
+      send(client, { type: 'room_deleted', payload: { roomCode: room.roomCode } });
+    }
+  });
+
+  rooms.delete(room.roomCode);
+}
+
+function handleListRooms(ws) {
+  const roomList = Array.from(rooms.values()).map(room => ({
+    roomCode: room.roomCode,
+    phase: room.phase,
+    playerCount: room.players.length,
+    songCount: room.songCount,
+    currentSongIndex: room.currentSongIndex,
+    createdAt: room.createdAt
+  }));
+
+  send(ws, { type: 'rooms_list', payload: { rooms: roomList } });
+}
+
 /* =====================
    WS EVENTS
 ===================== */
@@ -338,6 +367,8 @@ wss.on('connection', (ws) => {
       case 'mark_player': return handleMarkPlayer(ws, payload);
       case 'next_song': return handleNextSong(ws, payload);
       case 'restart': return handleRestart(ws, payload);
+      case 'delete_room': return handleDeleteRoom(ws, payload);
+      case 'list_rooms': return handleListRooms(ws);
       default: return error(ws, 'Unknown message type');
     }
   });
@@ -366,15 +397,8 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // Remove player
-    room.players = room.players.filter(p => p.id !== meta.playerId);
-
-    // Delete room if empty
-    if (room.players.length === 0) {
-      rooms.delete(room.roomCode);
-      return;
-    }
-
+    // Keep player in room so they can rejoin with same score
+    // Only broadcast updated state
     broadcastRoom(room);
   });
 });

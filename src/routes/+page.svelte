@@ -62,6 +62,12 @@
         }
         room = msg.payload;
       }
+      if (msg.type === 'room_deleted') {
+        room = null;
+        playerId = null;
+        shouldReconnect = false;
+        errorMsg = 'Room is verwijderd door de host';
+      }
       if (msg.type === 'error') {
         errorMsg = msg.payload.message;
       }
@@ -221,6 +227,14 @@
 h1 {
   color: var(--gold);
   text-shadow: 0 0 12px rgba(255, 223, 108, 0.55);
+  margin-bottom: 1rem;
+}
+
+/* Error */
+.error {
+  background: rgba(193, 18, 31, 0.85);
+  padding: 0.6rem 1rem;
+  border-radius: 10px;
   margin-bottom: 1rem;
 }
 
